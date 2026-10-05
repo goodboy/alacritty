@@ -22,6 +22,23 @@ making it possible to control Alacritty without directly accessing it.
 	Create a new window in the same Alacritty process.
 
 	*FLAGS*
+		*--print-pid*
+
+			Print the direct PTY child PID as a decimal number followed by a newline
+			after window creation. Creation errors are reported on stderr with a
+			nonzero exit status. Requires a running Alacritty with PID reply support.
+			Long error messages are summarized; full details are in Alacritty's log.
+
+			The PID can identify a shell, command, or platform login helper. It is
+			not a window ID or necessarily the eventual application's PID. The child
+			may already have exited and the PID may have been reused; this does not
+			provide process supervision or an exit status.
+
+			Replies are best-effort and do not block Alacritty on a nonreading client.
+			Waiting for a reply times out after 10 seconds. A missing reply, including
+			with an older running Alacritty, does not mean creation failed. The window
+			may already have been created; do not automatically retry the command.
+
 		*--hold*
 
 			Remain open after child process exits.

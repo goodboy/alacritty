@@ -256,7 +256,7 @@ pub struct MessageOptions {
 #[derive(Subcommand, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub enum SocketMessage {
     /// Create a new window in the same Alacritty process.
-    CreateWindow(WindowOptions),
+    CreateWindow(IpcCreateWindow),
 
     /// Update the Alacritty configuration.
     Config(IpcConfig),
@@ -320,6 +320,20 @@ impl WindowOptions {
     pub fn config_overrides(&self) -> ParsedOptions {
         ParsedOptions::from_options(&self.option)
     }
+}
+
+/// Parameters to the `create-window` IPC subcommand.
+#[cfg(unix)]
+#[derive(Args, Serialize, Deserialize, Default, Debug, Clone, PartialEq, Eq)]
+pub struct IpcCreateWindow {
+    #[clap(flatten)]
+    #[serde(flatten)]
+    pub window_options: WindowOptions,
+
+    /// Print the direct PTY child PID after creating the window.
+    #[clap(long = "print-pid")]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub request_pid: bool,
 }
 
 /// Parameters to the `config` IPC subcommand.
@@ -438,6 +452,52 @@ mod tests {
     #[cfg(target_os = "linux")]
     use clap_complete::Shell;
     use toml::Table;
+
+    #[cfg(unix)]
+    #[test]
+    fn create_window_wire_compatibility() {
+        // WindowOptions is the payload understood by daemons predating PID replies.
+        let old_options = WindowOptions::default();
+        let old_payload = serde_json::to_value(&old_options).unwrap();
+        let old_request = serde_json::json!({ "CreateWindow": old_payload });
+        let decoded: SocketMessage = serde_json::from_value(old_request.clone()).unwrap();
+        assert_eq!(decoded, SocketMessage::CreateWindow(IpcCreateWindow::default()));
+
+        // Unflagged requests retain the exact old payload, with no request_pid field.
+        assert_eq!(serde_json::to_value(decoded).unwrap(), old_request);
+
+        let options = IpcCreateWindow { request_pid: true, ..Default::default() };
+        let request = SocketMessage::CreateWindow(options.clone());
+        let value = serde_json::to_value(&request).unwrap();
+        assert_eq!(value["CreateWindow"]["request_pid"], true);
+        let decoded: SocketMessage = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(decoded, request);
+
+        // Old daemons ignore the new field and still create the requested window.
+        let old_decoded: WindowOptions =
+            serde_json::from_value(value["CreateWindow"].clone()).unwrap();
+        assert_eq!(old_decoded, old_options);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn print_pid_is_ipc_only() {
+        assert!(Options::try_parse_from(["alacritty", "--print-pid"]).is_err());
+        let parsed = Options::try_parse_from([
+            "alacritty",
+            "msg",
+            "create-window",
+            "--print-pid",
+            "-e",
+            "echo",
+            "--print-pid",
+        ])
+        .unwrap();
+        let Some(Subcommands::Msg(message)) = parsed.subcommands else { panic!() };
+        let SocketMessage::CreateWindow(options) = message.message else { panic!() };
+        assert!(options.request_pid);
+        assert_eq!(options.window_options.terminal_options.command, ["echo", "--print-pid"]);
+    }
 
     #[test]
     fn dynamic_title_ignoring_options_by_default() {

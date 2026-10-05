@@ -498,6 +498,12 @@ impl WindowContext {
         self.display.window.id()
     }
 
+    /// PID of the direct PTY child, which may already have exited.
+    #[cfg(unix)]
+    pub fn shell_pid(&self) -> u32 {
+        self.shell_pid
+    }
+
     /// Write the ref test results to the disk.
     pub fn write_ref_test_results(&self) {
         // Dump grid state.

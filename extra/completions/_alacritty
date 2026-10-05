@@ -72,6 +72,7 @@ _arguments "${_arguments_options[@]}" : \
 '*-o+[Override configuration file options \[example\: '\''cursor.style="Beam"'\''\]]:OPTION:_default' \
 '*--option=[Override configuration file options \[example\: '\''cursor.style="Beam"'\''\]]:OPTION:_default' \
 '--hold[Remain open after child process exit]' \
+'--print-pid[Print the direct PTY child PID after creating the window]' \
 '-h[Print help]' \
 '--help[Print help]' \
 && ret=0

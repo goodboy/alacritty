@@ -373,7 +373,7 @@ _alacritty() {
             return 0
             ;;
         alacritty__msg__create__window)
-            opts="-e -T -o -h --working-directory --hold --command --title --class --option --help"
+            opts="-e -T -o -h --working-directory --hold --command --title --class --option --print-pid --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
