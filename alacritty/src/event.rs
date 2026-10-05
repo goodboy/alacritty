@@ -152,7 +152,7 @@ impl Processor {
         &mut self,
         event_loop: &ActiveEventLoop,
         window_options: WindowOptions,
-    ) -> Result<(), Box<dyn Error>> {
+    ) -> Result<WindowId, Box<dyn Error>> {
         let window_context = WindowContext::initial(
             event_loop,
             self.proxy.clone(),
@@ -161,9 +161,10 @@ impl Processor {
         )?;
 
         self.gl_config = Some(window_context.display.gl_context().config());
-        self.windows.insert(window_context.id(), window_context);
+        let window_id = window_context.id();
+        self.windows.insert(window_id, window_context);
 
-        Ok(())
+        Ok(window_id)
     }
 
     /// Create a new terminal window.
@@ -171,7 +172,7 @@ impl Processor {
         &mut self,
         event_loop: &ActiveEventLoop,
         options: WindowOptions,
-    ) -> Result<(), Box<dyn Error>> {
+    ) -> Result<WindowId, Box<dyn Error>> {
         let gl_config = self.gl_config.as_ref().unwrap();
 
         // Override config with CLI/IPC options.
@@ -190,8 +191,48 @@ impl Processor {
             config_overrides,
         )?;
 
-        self.windows.insert(window_context.id(), window_context);
-        Ok(())
+        let window_id = window_context.id();
+        self.windows.insert(window_id, window_context);
+        Ok(window_id)
+    }
+
+    /// Handle window creation, optionally replying to an IPC client.
+    fn handle_create_window(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        options: WindowOptions,
+        #[cfg(unix)] reply: Option<Arc<UnixStream>>,
+    ) {
+        // Ensure no context is current when creating a window, since EGL on Wayland could
+        // otherwise lock the backing buffer of the current context.
+        for window_context in self.windows.values_mut() {
+            window_context.display.make_not_current();
+        }
+
+        let initial = self.gl_config.is_none();
+        let result = if initial {
+            self.create_initial_window(event_loop, options)
+        } else {
+            self.create_window(event_loop, options)
+        };
+
+        #[cfg(unix)]
+        if let Some(stream) = reply {
+            let result = result
+                .as_ref()
+                .map(|id| self.windows[id].shell_pid())
+                .map_err(|err| err.to_string());
+            ipc::send_reply(&stream, SocketReply::CreateWindow(result));
+        }
+
+        if let Err(err) = result {
+            if initial {
+                self.initial_window_error = Some(err);
+                event_loop.exit();
+            } else {
+                error!("Could not open window: {err:?}");
+            }
+        }
     }
 
     /// Run the event loop.
@@ -336,9 +377,7 @@ impl ApplicationHandler<Event> for Processor {
                 };
 
                 // Send JSON config to the socket.
-                if let Ok(mut stream) = stream.try_clone() {
-                    ipc::send_reply(&mut stream, SocketReply::GetConfig(config_json));
-                }
+                ipc::send_reply(&stream, SocketReply::GetConfig(config_json));
             },
             (EventType::ConfigReload(path), _) => {
                 // Clear config logs from message bar for all terminals.
@@ -371,23 +410,16 @@ impl ApplicationHandler<Event> for Processor {
             },
             // Create a new terminal window.
             (EventType::CreateWindow(options), _) => {
-                // XXX Ensure that no context is current when creating a new window,
-                // otherwise it may lock the backing buffer of the
-                // surface of current context when asking
-                // e.g. EGL on Wayland to create a new context.
-                for window_context in self.windows.values_mut() {
-                    window_context.display.make_not_current();
-                }
-
-                if self.gl_config.is_none() {
-                    // Handle initial window creation in daemon mode.
-                    if let Err(err) = self.create_initial_window(event_loop, options) {
-                        self.initial_window_error = Some(err);
-                        event_loop.exit();
-                    }
-                } else if let Err(err) = self.create_window(event_loop, options) {
-                    error!("Could not open window: {err:?}");
-                }
+                self.handle_create_window(
+                    event_loop,
+                    options,
+                    #[cfg(unix)]
+                    None,
+                );
+            },
+            #[cfg(unix)]
+            (EventType::IpcCreateWindow(options, stream), _) => {
+                self.handle_create_window(event_loop, options, Some(stream));
             },
             // Shutdown all windows.
             #[cfg(unix)]
@@ -546,6 +578,8 @@ pub enum EventType {
     Message(Message),
     Scroll(Scroll),
     CreateWindow(WindowOptions),
+    #[cfg(unix)]
+    IpcCreateWindow(WindowOptions, Arc<UnixStream>),
     #[cfg(unix)]
     IpcConfig(IpcConfig),
     #[cfg(unix)]
@@ -1929,7 +1963,10 @@ impl input::Processor<EventProxy, ActionContext<'_, Notifier, EventProxy>> {
                     TerminalEvent::Exit | TerminalEvent::ChildExit(_) | TerminalEvent::Wakeup => (),
                 },
                 #[cfg(unix)]
-                EventType::IpcConfig(_) | EventType::IpcGetConfig(..) | EventType::Shutdown => (),
+                EventType::IpcConfig(_)
+                | EventType::IpcGetConfig(..)
+                | EventType::IpcCreateWindow(..)
+                | EventType::Shutdown => (),
                 EventType::Message(_)
                 | EventType::ConfigReload(_)
                 | EventType::CreateWindow(_)
